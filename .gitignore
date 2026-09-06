@@ -1,0 +1,23 @@
+# macOS 系统生成的元数据
+.DS_Store
+
+# Swift / clang 编译产物
+.build/
+*.o
+*.dSYM/
+*.xcodeproj/
+
+# 应用包（建议用 build.sh 自行构建）
+RouteBar.app
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# WorkBuddy 记忆系统（仅本地）
+.workbuddy/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
