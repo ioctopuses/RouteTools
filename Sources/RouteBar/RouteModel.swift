@@ -63,12 +63,63 @@ struct RouteCommands {
         return "/sbin/route delete -host \(addr) \(route.gateway)"
     }
 
-    static func getRouteQueryCommand(for route: Route) -> String {
-        let (addr, mask) = parse(route.destination)
-        if let mask = mask {
-            return "/sbin/route get -net \(addr) -netmask \(mask)"
+    // MARK: - IPv4 工具
+
+    /// 点分十进制 → 32 位整数（非法输入返回 nil）
+    static func ipv4ToUInt32(_ s: String) -> UInt32? {
+        let parts = s.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return nil }
+        var result: UInt32 = 0
+        for part in parts {
+            guard let v = UInt32(part), v <= 255 else { return nil }
+            result = (result << 8) | v
         }
-        return "/sbin/route get -host \(addr)"
+        return result
+    }
+
+    /// 32 位整数 → 点分十进制
+    static func uint32ToIPv4(_ v: UInt32) -> String {
+        "\((v >> 24) & 0xFF).\((v >> 16) & 0xFF).\((v >> 8) & 0xFF).\(v & 0xFF)"
+    }
+
+    /// 点分十进制掩码 → 前缀长度（对连续掩码有效）
+    static func prefixFromNetmask(_ mask: String) -> Int? {
+        guard let m = ipv4ToUInt32(mask) else { return nil }
+        return m.nonzeroBitCount
+    }
+
+    /// 构造用于 `route get` 的**探测地址**。
+    ///
+    /// **为什么不能直接用网络地址**：macOS（BSD）的 `route get` 在查询
+    /// **网络地址本身**时不会命中该网段的路由，而是回落到默认路由。
+    /// 实测：系统表中存在 `8.0.0.0/5` 时，
+    ///   `route -n get 8.0.0.0`  → destination: default   （错误命中）
+    ///   `route -n get 8.8.8.8`  → destination: 8.0.0.0   （正确命中）
+    /// 因此若直接用网络地址查询，会把"明明存在的路由"误判为缺失，
+    /// 导致每次启动都白白提权添加 —— 取「网络地址 + 1」可避开这个坑。
+    static func probeAddress(for target: String) -> String {
+        let (addr, mask) = parse(target)
+        // 主机路由（用户未写掩码）：地址本身就是探测目标
+        guard let mask = mask,
+              let network = ipv4ToUInt32(addr),
+              let prefix = prefixFromNetmask(mask) else {
+            return addr
+        }
+        // /31、/32 可用地址极少，直接探测地址本身
+        guard prefix <= 30 else { return addr }
+        return uint32ToIPv4(network + 1)
+    }
+
+    /// 构造「查询系统路由表里是否存在这条路由」的命令。
+    ///
+    /// 使用 `route -n get <探测地址>`：该命令**普通用户即可执行**，无需 root，
+    /// 因此查询动作不会触发任何授权对话框（原先误用了提权通道，是弹窗的主要来源）。
+    /// `-n` 表示以数字形式输出，避免 DNS 反查导致额外延迟。
+    ///
+    /// 注意探测地址取「网络地址 + 1」而非网络地址本身，原因见 `probeAddress(for:)`。
+    static func getRouteQueryCommand(for route: Route) -> String {
+        let probe = probeAddress(for: route.destination)
+        return "/sbin/route -n get \(probe)"
     }
 }
 
@@ -159,6 +210,31 @@ struct PrivilegedRunner {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", appleScript]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: data, encoding: .utf8) ?? ""
+            return (process.terminationStatus == 0, output)
+        } catch {
+            return (false, error.localizedDescription)
+        }
+    }
+
+    // MARK: - 非提权执行（不触发任何授权弹窗）
+
+    /// 以**当前用户身份**执行命令，不申请管理员权限，因此**永远不会弹出授权框**。
+    ///
+    /// 用于只读查询类命令（如 `route get`、`netstat -rn`）——这些命令普通用户
+    /// 即可执行，走提权通道纯属浪费，而且每次都会触发一次系统授权对话框。
+    static func runAsUser(_ command: String) -> (success: Bool, output: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", command]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe

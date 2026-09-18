@@ -201,14 +201,13 @@ struct RouteEditView: View {
                              note: editing?.note ?? "")
 
         if let original = editing {
-            // 若原来已启用，先撤销旧路由（地址/网关可能已变更）
-            if original.enabled { _ = store.revoke(original) }
-            store.update(newRoute)
+            // 编辑：撤销旧路由 + 应用新路由，合并为单条命令（只弹一次授权框）
+            store.saveEdit(original: original, updated: newRoute)
         } else {
             store.add(newRoute)
+            if newRoute.enabled { _ = store.apply(newRoute) }
         }
 
-        if newRoute.enabled { _ = store.apply(newRoute) }
         dismiss()
     }
 }

@@ -30,15 +30,18 @@ final class RouteStore: ObservableObject {
         load()
         // 从 UserDefaults 恢复开关状态（init 中赋值不触发 didSet，安全）
         autoApplyOnLaunch = UserDefaults.standard.bool(forKey: "autoApplyOnLaunch")
-        
-        // 启动时同步系统路由表状态
-        syncSystemRoutes()
 
         if autoApplyOnLaunch {
-            // 主线程延时执行，确保 App 完成初始化、授权对话框能正常弹出
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            // 开启自动恢复：先按用户意图补齐缺失路由，再同步界面状态。
+            // 顺序不能颠倒——若先同步，系统表为空时会把启用意图全部抹成禁用，
+            // 导致"自动应用"无事可做（这也是此前该开关"不好用"的原因之一）。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 self?.applyAllEnabled()
+                self?.syncSystemRoutes()
             }
+        } else {
+            // 未开启自动恢复：直接反映系统路由表真实状态
+            syncSystemRoutes()
         }
     }
 
@@ -78,33 +81,43 @@ final class RouteStore: ObservableObject {
 
     // MARK: - 系统路由表同步
 
-    /// 查询系统路由表中是否存在某条路由
+    /// 查询系统路由表中是否存在某条路由。
+    ///
+    /// 关键：走 `runAsUser`（**非提权**）执行。`route get` 是只读查询，
+    /// 普通用户即可完成，原本走提权通道会让每次启动按路由条数连续弹授权框。
     func isRouteInSystemTable(_ route: Route) -> Bool {
+        let (addr, mask) = RouteCommands.parse(route.destination)
         let command = RouteCommands.getRouteQueryCommand(for: route)
-        let (success, output) = PrivilegedRunner.runAsAdmin(command)
-        
-        // 如果命令失败，路由肯定不存在
+        let (success, output) = PrivilegedRunner.runAsUser(command)
+
+        // 命令失败（如 "not in table"）说明系统中不存在该路由
         guard success else { return false }
-        
-        // 检查输出中是否包含预期的网关地址
-        // 例如：gateway: 192.168.1.15
-        let gatewayPattern = "gateway: \(route.gateway)"
-        return output.contains(gatewayPattern)
+
+        // 必须同时匹配网关 + 目标网段，避免被更宽泛/更具体的其它路由误判。
+        // 例：系统里只有 172.16.0.0/24，不应认为 172.16.0.0/16 已存在。
+        guard output.contains("gateway: \(route.gateway)") else { return false }
+        guard output.contains("destination: \(addr)") else { return false }
+        if let mask = mask {
+            guard output.contains("mask: \(mask)") else { return false }
+        }
+        return true
     }
 
-    /// 同步所有路由的启用状态（根据系统路由表实际状态）
+    /// 根据系统路由表的真实情况同步界面显示状态。
+    ///
+    /// 注意这里是**单向**同步：只在「系统表中确实存在、但配置为禁用」时改为启用
+    /// （反映真实生效状态）。反向情况——「配置为启用、但系统表中缺失」（常见于
+    /// 系统重启后路由表被清空）——**保留用户的启用意图**，交由 `applyAllEnabled()`
+    /// 去恢复，否则启用意图会在启动瞬间被抹掉，导致"自动应用"永远无事可做。
     func syncSystemRoutes() {
-        let updatedRoutes = routes.map { route in
+        let updatedRoutes = routes.map { route -> Route in
             var updated = route
-            let inSystem = isRouteInSystemTable(route)
-            // 如果配置为启用但系统表中不存在，或配置为禁用但系统表中存在，则同步状态
-            if route.enabled != inSystem {
-                updated.enabled = inSystem
+            if !route.enabled && isRouteInSystemTable(route) {
+                updated.enabled = true
             }
             return updated
         }
-        
-        // 如果有状态变化，更新并保存
+
         if updatedRoutes != routes {
             routes = updatedRoutes
             save()
@@ -150,13 +163,40 @@ final class RouteStore: ObservableObject {
         save()
     }
 
+    /// 保存编辑结果：撤销旧路由 + 应用新路由。
+    ///
+    /// 两条命令合并为**单条 shell 命令**一次性提权执行，避免编辑一次弹两次授权框
+    /// （原先分别调用 revoke + apply，各走一次提权通道）。
+    func saveEdit(original: Route, updated: Route) {
+        var commands: [String] = []
+        if original.enabled { commands.append(RouteCommands.deleteCommand(for: original)) }
+        if updated.enabled { commands.append(RouteCommands.addCommand(for: updated)) }
+
+        update(updated)
+
+        guard !commands.isEmpty else { return }
+        _ = PrivilegedRunner.runAsAdmin(commands.joined(separator: " ; "))
+    }
+
+    /// 把「所有已启用、且当前不在系统路由表中」的路由一次性补齐。
+    ///
+    /// 两个降弹窗设计：
+    /// 1. **先用非提权查询筛选**：已经在系统表里的路由直接跳过。若全部就位，
+    ///    整个过程零授权弹窗（系统重启后用不到、路由没变时也用不到）。
+    /// 2. **合并为单条 shell 命令**：确实有缺失时，也只在首次弹**一次**授权框，
+    ///    而不会按路由条数逐条弹。
     func applyAllEnabled() {
         let enabled = routes.filter { $0.enabled }
         guard !enabled.isEmpty else { return }
-        // 逐条应用：授权已通过 Authorization Services 缓存，
-        // 仅在首次（约 5 分钟缓存过期）后才会再次弹窗，不会每条各弹一次。
-        for route in enabled {
-            _ = apply(route)
-        }
+
+        // 步骤 1：非提权筛查，挑出真正缺失的路由
+        let missing = enabled.filter { !isRouteInSystemTable($0) }
+        guard !missing.isEmpty else { return }   // 全部已就位 → 不弹窗、不执行
+
+        // 步骤 2：合并为单条命令，一次授权完成
+        let combined = missing
+            .map { RouteCommands.addCommand(for: $0) }
+            .joined(separator: " ; ")
+        _ = PrivilegedRunner.runAsAdmin(combined)
     }
 }

@@ -30,7 +30,12 @@ build_arch() {
     -o "$BUILD_DIR/PrivilegedShim-$arch.o" \
     "$SRC_DIR/PrivilegedShim.m"
 
+  # -disable-sandbox：禁用编译器为「宏插件进程」创建的 sandbox-exec 隔离。
+  # 某些受限环境下（容器 / 嵌套沙箱）无法执行 sandbox_apply，会导致
+  # swift-plugin-server 启动失败，报 "produced malformed response"，
+  # 进而使 @State 等 SwiftUI 宏无法展开、整个编译失败。
   swiftc -O -target "$triple" \
+    -disable-sandbox \
     -import-objc-header "$SRC_DIR/Bridging.h" \
     -framework Security \
     -o "$BUILD_DIR/$APP_NAME-$arch" \
