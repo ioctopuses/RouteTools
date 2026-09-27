@@ -18,10 +18,17 @@ RouteTools/
 ├── Sources/RouteBar/
 │   ├── RouteModel.swift     # Route 数据模型 + route 命令生成 + 提权执行（Authorization Services）
 │   ├── RouteStore.swift     # 本地存储 + 实际执行系统命令
-│   └── RouteBarApp.swift    # 菜单栏界面、添加/编辑窗口、版本显示
-├── AppIcon.icns             # 应用图标
+│   ├── RouteBarApp.swift    # 菜单栏界面、添加/编辑窗口、版本显示
+│   ├── Bridging.h           # Swift ←→ Objective-C 桥接头
+│   └── PrivilegedShim.m     # 提权桥接实现（Auth Services 在 Swift 里被标为不可用）
+├── AppIcon.icns             # 应用图标（已按 Apple 网格规范制作）
 ├── Info.plist               # .app 包配置
-├── build.sh                 # 编译 + 打包脚本
+├── RouteTools.entitlements  # 签名时附带的权限声明
+├── build.sh                 # 编译 + 打包 + 签名
+├── make_cert.sh             # 创建本地代码签名证书（只需跑一次，见「签名与权限」）
+├── install.command          # 一键安装到 /Applications
+├── make_icon.py             # 重新生成 AppIcon.icns（遵循 Apple 图标网格）
+├── icon_grid.py             # 图标网格量测工具
 └── README.md
 ```
 
@@ -31,11 +38,16 @@ RouteTools/
    ```bash
    xcode-select --install
    ```
-2. 在项目目录执行打包脚本：
+2. 创建本地代码签名证书（**只需一次**，10 年有效）：
+   ```bash
+   bash make_cert.sh
+   ```
+   跳过这步也能构建，但会退回 ad-hoc 签名 —— 见下面「[签名与权限](#签名与权限为什么需要一张自签名证书)」。
+3. 在项目目录执行打包脚本：
    ```bash
    bash build.sh
    ```
-3. 完成后会生成 `RouteBar.app`。双击即可打开，或拖入 `/Applications` 长期使用。
+4. 完成后会生成 `RouteBar.app`。双击即可打开，或执行 `bash install.command` 装到 `/Applications`。
 
 ## 使用方法
 
@@ -97,6 +109,49 @@ macOS 系统会自动缓存授权状态，通常**约5分钟**。期间内再次
 **Q：菜单栏图标点不开 / 看不到？**
 确认系统版本 ≥ macOS 13（Ventura）。若被其它菜单栏工具挤掉，可长按 Command 拖动菜单栏图标调整位置。
 
+**Q：Dock / 访达里的 RouteBar 图标看着比别的软件大一圈？**
+这是**应用图标（AppIcon.icns）的画布留白**问题，不是菜单栏图标的问题 —— 菜单栏那个「地球」是系统 SF Symbol，13pt，反而比多数图标还小。
+
+macOS 的图标规范是：在 1024×1024 画布里，**内容只占 824×824（80.5%），四边各留 100px 空白**。早期版本的 `AppIcon.icns` 内容铺满了整张画布（100%），所以视觉上比周围遵循规范的应用「大一号」。现已重排到标准网格：
+
+```
+画布 1024×1024 → 不透明内容 824×824，留白 左100 右100 上100 下100
+```
+
+`make_icon.py` 生成图标时会自动套用这个网格；`icon_grid.py` 可随时量测当前 `AppIcon.icns` 的实际占比。
+
+## 签名与权限（为什么需要一张自签名证书）
+
+macOS 判断「你是不是同一个 App」靠的是签名的**「指定要求」(designated requirement)**：
+
+| 签名方式 | 指定要求 | 重新编译后 | 后果 |
+|---|---|---|---|
+| ad-hoc（`codesign --sign -`） | `cdhash H"7574b4fa…"` | 哈希变化 | 系统视为**新 App**，钥匙串 / 自动化 / 隐私授权全部失效并重新弹窗 |
+| 证书签名（本项目默认） | `identifier "com.example.routebar" and certificate root = H"223c4042…"` | 不变 | 授权**跨版本保持** |
+
+ad-hoc 没有证书可锚定，只能退化成二进制哈希 —— 所以**改一行代码重新编译，之前的授权就作废**；而 macOS **有意不清理**失效记录（防止「删了重装」被用来重置权限探测），于是陈旧的 RouteBar 条目会在「系统设置 → 隐私与安全性」里越积越多。
+
+**创建证书（只需一次，10 年有效）：**
+
+```bash
+bash make_cert.sh
+```
+
+它会做四件事：`openssl` 生成自签名证书 → 打包成 `.p12` 导入登录钥匙串 → 标记为受信任（Code Signing 策略）→ `security find-identity -v -p codesigning` 验证。
+
+> ⚠️ **第三步不能省。** 自签名证书导入后默认处于 `CSSMERR_TP_NOT_TRUSTED` 状态，`find-identity -v`（只列"有效"身份）**不会**显示它 —— 虽然证书和私钥其实都在钥匙串里、`codesign` 也能用。加了信任记录才算真正"有效"，这也是脚本会失败重试时最容易踩的坑。
+
+不想跑脚本就手工建：**钥匙串访问 → 证书助理 → 创建证书…**
+1. 名称填 **`RouteBar Local Signing`**（必须与 `build.sh` 里的 `SIGN_IDENTITY` 一致，否则会静默回退到 ad-hoc）
+2. 身份类型选「自签名根证书」，**证书类型必须选「代码签名」**
+3. 勾选「让我覆盖默认值」，有效期改长（如 `3650` 天），创建
+
+**多台机器 / 换电脑时不需要搬运证书**：指定要求锚定的是「本机这张证书」，每台机器**各自建一张同名证书**即可，各机分别获得「授权跨版本保持」的效果。只有想让两台机器共用**同一个身份**时，才需要导出 `.p12` 带过去。
+
+> ⚠️ 别删钥匙串里那对「证书 + 私钥」。删掉 = 永久换了个身份，你会立刻回到「每次更新都重新授权」，而旧记录还会继续堆在设置列表里。建议导出一次 `.p12` 当作备份。
+
+**权限记录残留了怎么办：** 授权失效后旧条目不会自己消失，到「系统设置 → 隐私与安全性」里选中对应条目点 `−` 手工删除即可。
+
 ## 进阶：Touch ID（指纹）支持
 
 macOS 的 Authorization Services 授权对话框**不支持 Touch ID**（系统限制）。如果你确实需要指纹验证，有两个方向：
@@ -124,6 +179,37 @@ sudo visudo
 - **修订号（第三位）**：小更新，如修复、小功能增强。
 - **次版本（第二位）**：较大更新，如新增功能模块。
 - **主版本（第一位）**：颠覆性变更，如架构重写或核心逻辑改变。
+
+---
+
+### v1.6.0 — 2026-09-27
+
+**修正应用图标尺寸 + 迁移到证书签名 + 新增一键安装（借鉴 ApexBar 的打包签名方案）**
+
+**1. 应用图标尺寸对齐 Apple 规范**
+
+- **现象**：Dock / 访达里 RouteBar 的图标看着比周围应用「大一号」
+- **根因**：不是菜单栏图标的问题 —— 菜单栏那个「地球」是系统 SF Symbol，13pt，实测**比多数应用还小**；真正的原因在 `AppIcon.icns`：**内容铺满了整张画布（100%）**，而 Apple 规范是 1024 画布中内容只占 **824×824（80.5%）**、四边各留 100px 空白
+- **修复**：新增 `reflow_icon.py` 把现有图标等比缩到 824×824 居中重排（按不同倍率分别处理，避免缩放糊边），`make_icon.py` 同步改为遵循同一网格；`icon_grid.py` 可随时量测占比
+- **实测结果**：`AppIcon.icns` → 画布 1024×1024，不透明内容 824×824，留白 左100 右100 上100 下100，与规范完全一致
+
+**2. 从 ad-hoc 签名迁移到证书签名（核心）**
+
+- **根因**：ad-hoc 签名的「指定要求」只能退化成 `cdhash H"…"`（二进制哈希）。每次重新编译哈希都变，macOS 就把它当成一个**全新 App** —— 钥匙串 / 自动化 / 隐私授权全部失效并重新弹窗，失效的旧记录还清不掉
+- **修复**：新增 `make_cert.sh`，用 `openssl` 生成自签名代码签名证书「RouteBar Local Signing」并导入钥匙串；`build.sh` 优先用该身份签名，找不到时才回退 ad-hoc（并打印警告）
+- **实测结果**：`codesign -d -r-` 的指定要求已变为 `identifier "com.example.routebar" and certificate root = H"223c4042…"` —— 锚定证书根而非哈希，重新编译后仍是「同一个 App」
+- **新增** `RouteTools.entitlements` 并在签名时显式带上（漏传时 `codesign` 照样成功、产物里却是空的，形同不存在）
+
+**3. 新增 `install.command` 一键安装**
+
+- 定位 `RouteBar.app` → 退出正在运行的旧版本 → 拷到 `/Applications` → 清 `com.apple.quarantine` 隔离标记 → 启动
+- **不修改任何系统安全设置，也不需要管理员密码**（解决拷给他人时「无法验证开发者」反复手动放行的问题）
+
+**4. 修复 `build.sh` 的隐性中断**
+
+- `set -u` 下，`echo "…「$SIGN_IDENTITY」…"` 会直接报 `SIGN_IDENTITY?: unbound variable` 中断构建。根因是 macOS 自带的 **bash 3.2.57** 在 `$VAR` 紧跟非 ASCII 字节时，会把多字节字符的首字节当成变量名的一部分。改为 `${SIGN_IDENTITY}` 显式界定变量边界
+- 同一写法在 ApexBar 的 `build.sh` 里也存在（那边是 `set -e` 无 `-u`，所以不报错，只是把身份名打印成空的），已一并修正
+- 版本号升至 1.6.0
 
 ---
 

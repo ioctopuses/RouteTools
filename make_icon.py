@@ -12,6 +12,8 @@ import tempfile
 
 from PIL import Image, ImageDraw
 
+import icon_grid
+
 SIZE = 1024  # 主图分辨率
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "AppIcon.icns")
 
@@ -121,25 +123,10 @@ def main():
     # 2x 超采样提升线条质量
     master = draw_icon(SIZE * 2).resize((SIZE, SIZE), Image.LANCZOS)
 
-    iconset = tempfile.mkdtemp(suffix=".iconset")
-    specs = [
-        ("icon_16x16.png", 16),
-        ("icon_16x16@2x.png", 32),
-        ("icon_32x32.png", 32),
-        ("icon_32x32@2x.png", 64),
-        ("icon_128x128.png", 128),
-        ("icon_128x128@2x.png", 256),
-        ("icon_256x256.png", 256),
-        ("icon_256x256@2x.png", 512),
-        ("icon_512x512.png", 512),
-        ("icon_512x512@2x.png", 1024),
-    ]
-    for name, px in specs:
-        img = master.resize((px, px), Image.LANCZOS)
-        img.save(os.path.join(iconset, name))
-
-    subprocess.run(["iconutil", "--convert", "icns",
-                    "--output", OUT, iconset], check=True)
+    # 缩到 Apple 官方图标网格（内容 824/1024，四周各留白 100px）后打包。
+    # 若直接把图形画满整张画布，Dock / 访达里会比系统 App 明显大一圈。
+    master = icon_grid.reframe_to_grid(master)
+    icon_grid.write_icns(master, OUT)
     print("生成图标：", OUT)
 
 
