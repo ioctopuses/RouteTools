@@ -3,15 +3,16 @@
 # RouteBar 一键安装（macOS）
 #
 # 用法：
-#   A. 双击本文件（需与 RouteBar.app 或 RouteBar-*.zip 放在同一目录）：
+#   A. 一行命令（推荐，无需预先下载任何文件）—— 打开「终端」粘贴：
+#      /bin/bash -c "$(curl -fsSL https://github.com/ioctopuses/RouteTools/releases/latest/download/install.command)"
+#      终端里执行的内容不经 Gatekeeper 评估，所以这条路**全程没有弹窗**。
+#   B. 双击本文件（需与 RouteBar.app 或 RouteBar-*.zip 放在同一目录）：
 #      首次运行 macOS 会拦一下「无法验证开发者」—— 在文件上 右键 → 打开 → 再点「打开」确认一次。
 #      （只需确认这一次；脚本是单个文件，不是 .app，比放行 App 省事）
-#   B. 终端里执行：
-#      bash install.command
-#      终端里执行的内容不经 Gatekeeper 评估，所以这条路**全程没有弹窗**。
+#   C. 终端里执行本地副本：
+#      xattr -dr com.apple.quarantine install.command && bash install.command
 #
-# 它做的事：找到 RouteBar.app → 退出正在运行的旧版本 → 装到 /Applications
-#           → 清掉 macOS 隔离标记 → 启动
+# 本地找不到 RouteBar.app 时会自动从 GitHub Release 下载最新版（仓库地址见下方 REPO）。
 #
 # 为什么要清隔离标记：从浏览器 / 微信 / U 盘 / AirDrop 拿到的文件，会被 macOS
 # 打上 com.apple.quarantine 属性，Gatekeeper 一见到它就会要求用户去「系统设置
@@ -24,6 +25,7 @@ set -euo pipefail
 APP_NAME="RouteBar.app"
 EXEC_NAME="RouteBar"
 DEST="/Applications/$APP_NAME"
+REPO="ioctopuses/RouteTools"
 WORK=""
 
 info() { printf '  ·  %s\n' "$*"; }
@@ -49,8 +51,21 @@ if [ -z "$APP" ]; then
     fi
 fi
 
+if [ -z "$APP" ]; then
+    # 本地没有 → 从 GitHub Release 取最新版资产（RouteBar-*.zip）
+    info "本地未找到 ${APP_NAME}，从 GitHub Release 下载最新版"
+    WORK="$(/usr/bin/mktemp -d)"
+    URL="$(/usr/bin/curl -fsL "https://api.github.com/repos/$REPO/releases/latest" \
+           | /usr/bin/grep -o 'https://[^"]*\.zip' | /usr/bin/head -1 || true)"
+    [ -n "$URL" ] || fail "没找到可下载的版本。请把 $APP_NAME（同名目录 / RouteBar-*.zip）放到本脚本同一目录后重试。"
+    info "下载 $(/usr/bin/basename "$URL")"
+    /usr/bin/curl -fL --progress-bar "$URL" -o "$WORK/RouteBar.zip"
+    /usr/bin/ditto -x -k "$WORK/RouteBar.zip" "$WORK"
+    APP="$(/usr/bin/find "$WORK" -maxdepth 3 -name "$APP_NAME" -print -quit)"
+fi
+
 if [ -z "$APP" ] || [ ! -f "$APP/Contents/MacOS/$EXEC_NAME" ]; then
-    fail "没有找到 $APP_NAME。请先运行 bash build.sh 生成，或把 $APP_NAME（$APP_NAME 同名目录 / RouteBar-*.zip）放到本脚本同一目录后重试。"
+    fail "没有找到可用的 $APP_NAME。请先运行 bash build.sh 生成，或把 $APP_NAME（同名目录 / RouteBar-*.zip）放到本脚本同一目录后重试。"
 fi
 info "源文件：$APP"
 

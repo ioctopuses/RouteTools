@@ -11,6 +11,26 @@
 - 可选「启动时自动应用已启用路由」，重启后自动恢复
 - 配置持久化保存，无需重复输入
 
+## 安装
+
+**方式一：一行命令（推荐，无需下载任何文件）**
+
+```bash
+/bin/bash -c "$(curl -fsSL https://github.com/ioctopuses/RouteTools/releases/latest/download/install.command)"
+```
+
+它会自动下载最新版 → 装到 `/Applications` → 清掉 macOS 隔离标记 → 启动。终端里执行的内容不经 Gatekeeper 评估，**全程无弹窗**。
+
+**方式二：手动下载**
+
+到 [Releases](https://github.com/ioctopuses/RouteTools/releases) 下载 `RouteBar-*.zip`，解压后把 `RouteBar.app` 拖进 `/Applications`。首次打开若提示「无法验证开发者」，执行一次：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/RouteBar.app
+```
+
+**方式三：自己编译**（见下方「编译打包」）
+
 ## 目录结构
 
 ```
