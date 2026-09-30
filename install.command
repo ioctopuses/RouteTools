@@ -57,7 +57,7 @@ if [ -z "$APP" ]; then
     WORK="$(/usr/bin/mktemp -d)"
     URL="$(/usr/bin/curl -fsL "https://api.github.com/repos/$REPO/releases/latest" \
            | /usr/bin/grep -o 'https://[^"]*\.zip' | /usr/bin/head -1 || true)"
-    [ -n "$URL" ] || fail "没找到可下载的版本。请把 $APP_NAME（同名目录 / RouteBar-*.zip）放到本脚本同一目录后重试。"
+    [ -n "$URL" ] || fail "没找到可下载的版本。请把 ${APP_NAME}（同名目录 / RouteBar-*.zip）放到本脚本同一目录后重试。"
     info "下载 $(/usr/bin/basename "$URL")"
     /usr/bin/curl -fL --progress-bar "$URL" -o "$WORK/RouteBar.zip"
     /usr/bin/ditto -x -k "$WORK/RouteBar.zip" "$WORK"
@@ -65,7 +65,7 @@ if [ -z "$APP" ]; then
 fi
 
 if [ -z "$APP" ] || [ ! -f "$APP/Contents/MacOS/$EXEC_NAME" ]; then
-    fail "没有找到可用的 $APP_NAME。请先运行 bash build.sh 生成，或把 $APP_NAME（同名目录 / RouteBar-*.zip）放到本脚本同一目录后重试。"
+    fail "没有找到可用的 ${APP_NAME}。请先运行 bash build.sh 生成，或把 ${APP_NAME}（同名目录 / RouteBar-*.zip）放到本脚本同一目录后重试。"
 fi
 info "源文件：$APP"
 
@@ -81,6 +81,17 @@ info "安装到 $DEST"
 # ── 3. 清掉隔离标记（关键一步）───────────────────────────────────────
 /usr/bin/xattr -dr com.apple.quarantine "$DEST" >/dev/null 2>&1 || true
 info "已清除隔离标记（Gatekeeper 不会再要求手动放行）"
+
+# ── 3.5 清理外来文件，修复可能被破坏的代码封套 ──────────────────────
+# 本机实测：某后台程序（疑似腾讯柠檬的实时监控）会在 /Applications 里
+# App 被替换时往 bundle 内塞 ".BC.T_*" 临时副本（二进制 / Info.plist /
+# PkgInfo 的拷贝），残留后 codesign 校验报 "a sealed resource is missing
+# or invalid"。这些名字在正常构建的 bundle 里不可能是合法内容，删掉即可。
+JUNK=$(/usr/bin/find "$DEST" \( -name ".BC.*" -o -name "._*" -o -name ".DS_Store" \) 2>/dev/null)
+if [ -n "$JUNK" ]; then
+    printf '%s\n' "$JUNK" | while IFS= read -r f; do /bin/rm -f "$f"; done
+    info "已清理 bundle 内的外来临时文件（否则签名校验会失败）"
+fi
 
 # ── 4. 启动 ───────────────────────────────────────────────────────────
 /usr/bin/open "$DEST" >/dev/null 2>&1 || true
