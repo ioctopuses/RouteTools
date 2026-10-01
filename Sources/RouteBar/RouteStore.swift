@@ -33,6 +33,14 @@ final class RouteStore: ObservableObject {
         }
     }
 
+    /// 启动后是否自动检查更新（设置页「更新」分组绑定此值）。
+    /// 只影响**启动后**那一次静默检查；设置页里的手动「检查更新」始终可用。
+    @Published var autoCheckForUpdates: Bool = true {
+        didSet {
+            UserDefaults.standard.set(autoCheckForUpdates, forKey: "autoCheckForUpdates")
+        }
+    }
+
     private let fileURL: URL
 
     init() {
@@ -45,6 +53,7 @@ final class RouteStore: ObservableObject {
         // 从 UserDefaults 恢复开关状态（init 中赋值不触发 didSet，安全）
         autoApplyOnLaunch = UserDefaults.standard.bool(forKey: "autoApplyOnLaunch")
         showInMenuBar = UserDefaults.standard.object(forKey: "showInMenuBar") as? Bool ?? true
+        autoCheckForUpdates = UserDefaults.standard.object(forKey: "autoCheckForUpdates") as? Bool ?? true
 
         if autoApplyOnLaunch {
             // 开启自动恢复：先按用户意图补齐缺失路由，再同步界面状态。

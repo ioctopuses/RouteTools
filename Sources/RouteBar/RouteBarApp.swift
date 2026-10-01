@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 // MARK: - 读取应用版本号
 
@@ -10,67 +11,95 @@ extension Bundle {
 
 /// 应用入口。
 ///
-/// 三个 Window Scene：
-///   - `routeList` 主窗口（路由列表 + 工具栏，App 启动时自动打开）
-///   - `addRoute`  添加路由窗口（由主窗口或菜单栏「添加路由…」唤起）
-///   - `editRoute` 编辑路由窗口（复用同一个窗口，目标路由由 `store.editingRouteID` 决定）
+/// **窗口不由 SwiftUI 的 `Window` Scene 管理**，而是统一交给 `WindowManager`
+/// （AppKit）。原因见 `WindowManager` 的注释：快速启动页是从 `AppDelegate`
+/// 桥接进 `NSPopover` 的，不在任何 Scene 里，拿不到 `openWindow` 环境值。
 ///
-/// 菜单栏 UI 由 `AppDelegate`（`NSStatusItem` + `NSPopover`）管理，
-/// 这里不暴露 `MenuBarExtra`，因为 SwiftUI 的 `MenuBarExtra`
-/// 没有公开的可见性绑定，无法支持「在菜单栏显示图标」开关。
+/// 这里只保留一个 `Settings` 场景作为 **Scene 锚点** —— SwiftUI 的 `App`
+/// 必须提供至少一个 Scene，且应用菜单（`.commands`）需要挂在它上面。
+/// 真正打开窗口时一律走 `WindowManager`。
 @main
 struct RouteBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
-        // 主窗口：路由列表（App 启动时自动打开，用户关掉后可从菜单栏再次唤起）
-        Window("路由管理", id: "routeList") {
-            RouteListView()
-                .environmentObject(appDelegate.store)
+        Settings {
+            // 真正的设置窗口由 WindowManager 创建，这里只是占位
+            EmptyView()
         }
-        .defaultSize(width: 560, height: 380)
-        .windowResizability(.contentMinSize)
+        .commands {
+            // ── 关于 RouteBar ──────────────────────────────────────
+            CommandGroup(replacing: .appInfo) {
+                Button("关于 RouteBar") { WindowManager.shared.showAbout() }
+            }
 
-        // 添加路由窗口
-        Window("添加路由", id: "addRoute") {
-            RouteEditView(route: nil)
-                .environmentObject(appDelegate.store)
-        }
-        .defaultSize(width: 420, height: 240)
+            // ── 偏好设置… ⌘, ───────────────────────────────────────
+            CommandGroup(replacing: .appSettings) {
+                Button("偏好设置…") { WindowManager.shared.showSettings() }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
 
-        // 编辑路由窗口（复用同一个窗口，目标路由由 store.editingRouteID 决定）
-        Window("编辑路由", id: "editRoute") {
-            if let id = appDelegate.store.editingRouteID,
-               let route = appDelegate.store.routes.first(where: { $0.id == id }) {
-                RouteEditView(route: route)
-                    .environmentObject(appDelegate.store)
-            } else {
-                EmptyView()
+            // ── 窗口与维护 ────────────────────────────────────────
+            // 注意：这里**只放窗口/维护入口**，「在菜单栏显示快速启动图标」
+            // 与「启动时自动应用已启用路由」两个开关按设计已移到设置页，
+            // 不再出现在应用菜单里。
+            CommandGroup(after: .appSettings) {
+                Button("打开主窗口") { WindowManager.shared.showMainWindow() }
+                    .keyboardShortcut("o", modifiers: .command)
+
+                Button("打开快速启动") {
+                    NotificationCenter.default.post(name: .rbToggleQuickLaunch, object: nil)
+                }
+                .keyboardShortcut("r", modifiers: [.command, .option])
+
+                Divider()
+
+                Button("清除授权缓存") { PrivilegedRunner.resetAuthorization() }
+            }
+
+            // ── 退出 ──────────────────────────────────────────────
+            CommandGroup(replacing: .appTermination) {
+                Button("退出 RouteBar") { NSApp.terminate(nil) }
+                    .keyboardShortcut("q", modifiers: .command)
             }
         }
-        .defaultSize(width: 420, height: 240)
     }
 }
 
-// MARK: - 主窗口：路由列表
+// MARK: - 主窗口：路由管理
 
 struct RouteListView: View {
     @EnvironmentObject var store: RouteStore
-    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(spacing: 0) {
             // 顶部工具栏
-            HStack {
-                Text("RouteBar · 路由管理")
-                    .font(.headline)
+            HStack(spacing: 10) {
+                Text("路由管理")
+                    .font(.system(size: 14, weight: .semibold))
+
                 Spacer()
+
+                // 设置齿轮：进设置页
                 Button {
-                    openWindow(id: "addRoute")
+                    WindowManager.shared.showSettings()
+                } label: {
+                    GearIcon(size: 16)
+                        .padding(4)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .help("设置")
+
+                // 添加路由：蓝底高亮
+                Button {
+                    WindowManager.shared.showEditor(route: nil)
                 } label: {
                     Label("添加路由", systemImage: "plus")
                 }
-                .keyboardShortcut("n", modifiers: [.command])
+                .keyboardShortcut("n", modifiers: .command)
+                .buttonStyle(.borderedProminent)
+                .help("添加一条静态路由（⌘N）")
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -116,70 +145,13 @@ struct RouteListView: View {
             .padding(.vertical, 8)
             .background(.bar)
         }
-        .frame(minWidth: 520, minHeight: 320)
     }
 
     private var statusText: String {
-        if store.routes.isEmpty {
-            return "0 条路由"
-        }
+        if store.routes.isEmpty { return "0 条路由" }
         let total = store.routes.count
         let enabled = store.routes.filter { $0.enabled }.count
         return "\(total) 条路由 · 已启用 \(enabled)"
-    }
-}
-
-// MARK: - 菜单栏下拉内容（精简版：仅设置；路由列表全部在主窗口）
-
-/// 由 AppDelegate 的 NSHostingController 桥接到 NSPopover。
-/// v1.8.0 改为「设置面板」：路由列表与所有 CRUD 都在主窗口里，
-/// 菜单栏只放开关 + 入口。这样菜单栏高度可控、不再随路由条数增长撑屏。
-struct MenuBarContent: View {
-    @EnvironmentObject var store: RouteStore
-    @Environment(\.openWindow) private var openWindow
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("RouteBar")
-                    .font(.headline)
-                Spacer()
-            }
-            Divider()
-
-            Toggle("启动时自动应用已启用路由",
-                   isOn: $store.autoApplyOnLaunch)
-                .font(.caption)
-                .onChange(of: store.autoApplyOnLaunch) { newValue in
-                    if newValue {
-                        store.applyAllEnabled()
-                    }
-                }
-
-            Toggle("在菜单栏显示图标",
-                   isOn: $store.showInMenuBar)
-                .font(.caption)
-
-            Text("关闭后按 ⌥⌘R 唤起菜单")
-                .font(.system(size: 10))
-                .foregroundColor(.secondary)
-
-            Text("v\(Bundle.main.appVersion)")
-                .font(.system(size: 10))
-                .foregroundColor(.secondary)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-
-            HStack {
-                Button("清除授权缓存") { PrivilegedRunner.resetAuthorization() }
-                    .font(.caption)
-                Spacer()
-                Button("打开主窗口…") { openWindow(id: "routeList") }
-                    .keyboardShortcut("o", modifiers: [.command])
-                Button("退出") { NSApplication.shared.terminate(nil) }
-            }
-        }
-        .padding(12)
-        .frame(width: 300)
     }
 }
 
@@ -187,14 +159,26 @@ struct MenuBarContent: View {
 
 struct RouteRow: View {
     @EnvironmentObject var store: RouteStore
-    @Environment(\.openWindow) private var openWindow
     let route: Route
 
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(route.name.isEmpty ? route.destination : route.name)
-                    .font(.system(size: 13, weight: .medium))
+                HStack(spacing: 6) {
+                    Text(route.name.isEmpty ? route.destination : route.name)
+                        .font(.system(size: 13, weight: .medium))
+                    if let group = route.group, !group.isEmpty {
+                        Text(group)
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(Color.primary.opacity(0.07))
+                            )
+                    }
+                }
                 Text("\(route.destination)  →  \(route.gateway)")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
@@ -208,16 +192,17 @@ struct RouteRow: View {
             .labelsHidden()
             .toggleStyle(.switch)
 
-            Button(action: {
-                store.editingRouteID = route.id
-                openWindow(id: "editRoute")
-            }) {
+            Button {
+                WindowManager.shared.showEditor(route: route)
+            } label: {
                 Image(systemName: "pencil")
             }
             .buttonStyle(.borderless)
             .help("编辑")
 
-            Button(action: { store.remove(route) }) {
+            Button {
+                store.remove(route)
+            } label: {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
@@ -231,30 +216,35 @@ struct RouteRow: View {
 
 struct RouteEditView: View {
     @EnvironmentObject var store: RouteStore
-    @Environment(\.dismiss) private var dismiss
 
     let editing: Route?
+    /// 关闭本窗口（由 WindowManager 提供）
+    let onClose: () -> Void
 
     @State private var name: String
     @State private var destination: String
     @State private var gateway: String
+    @State private var group: String
     @State private var enabled: Bool
     @State private var error: String?
 
-    init(route: Route?) {
+    init(route: Route?, onClose: @escaping () -> Void) {
         self.editing = route
+        self.onClose = onClose
         _name = State(initialValue: route?.name ?? "")
         _destination = State(initialValue: route?.destination ?? "")
         _gateway = State(initialValue: route?.gateway ?? "")
+        _group = State(initialValue: route?.group ?? "")
         _enabled = State(initialValue: route?.enabled ?? true)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(editing == nil ? "添加路由" : "编辑路由")
-                .font(.headline)
+                .font(.system(size: 14, weight: .semibold))
 
             TextField("名称（可选，便于识别）", text: $name)
+            TextField("分组（可选，如：公司 / 家）", text: $group)
             TextField("目标网段，如 172.16.0.0/16 或主机 10.0.0.1", text: $destination)
             TextField("网关地址，如 192.168.1.15", text: $gateway)
             Toggle("保存后立即启用", isOn: $enabled)
@@ -267,13 +257,13 @@ struct RouteEditView: View {
 
             HStack {
                 Spacer()
-                Button("取消", role: .cancel) { dismiss() }
+                Button("取消", role: .cancel) { onClose() }
                 Button(editing == nil ? "添加" : "保存") { save() }
                     .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
             }
         }
         .padding(20)
-        .frame(width: 380)
     }
 
     private func save() {
@@ -282,12 +272,15 @@ struct RouteEditView: View {
         guard !dest.isEmpty else { error = "请填写目标网段 / 主机"; return }
         guard !gw.isEmpty else { error = "请填写网关地址"; return }
 
+        let groupValue = group.trimmingCharacters(in: .whitespaces)
+
         let newRoute = Route(id: editing?.id ?? UUID(),
                              name: name.trimmingCharacters(in: .whitespaces),
                              destination: dest,
                              gateway: gw,
                              enabled: enabled,
-                             note: editing?.note ?? "")
+                             note: editing?.note ?? "",
+                             group: groupValue.isEmpty ? nil : groupValue)
 
         if let original = editing {
             // 编辑：撤销旧路由 + 应用新路由，合并为单条命令（只弹一次授权框）
@@ -297,6 +290,6 @@ struct RouteEditView: View {
             if newRoute.enabled { _ = store.apply(newRoute) }
         }
 
-        dismiss()
+        onClose()
     }
 }

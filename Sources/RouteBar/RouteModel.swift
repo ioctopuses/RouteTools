@@ -9,18 +9,28 @@ struct Route: Identifiable, Codable, Equatable {
     var enabled: Bool
     var note: String
 
+    /// 分组名（可选）。快速启动页按它分段显示；为空归入「未分组」。
+    ///
+    /// 声明成 `String?` 而不是 `String = ""` 是有意的：Swift 合成的
+    /// `init(from:)` 对**可选类型**走 `decodeIfPresent`，旧版本写下的
+    /// routes.json 里没有这个键也能正常解码；若用非可选 String，
+    /// 升级后读旧文件会直接抛 keyNotFound，用户的路由配置会全部丢失。
+    var group: String?
+
     init(id: UUID = UUID(),
          name: String = "",
          destination: String,
          gateway: String,
          enabled: Bool = true,
-         note: String = "") {
+         note: String = "",
+         group: String? = nil) {
         self.id = id
         self.name = name
         self.destination = destination
         self.gateway = gateway
         self.enabled = enabled
         self.note = note
+        self.group = group
     }
 }
 
@@ -196,6 +206,20 @@ struct PrivilegedRunner {
     /// 清除进程内缓存的授权（下次提权需重新验证）。菜单「清除授权缓存」调用。
     static func resetAuthorization() {
         RBResetAuth()
+    }
+
+    /// 主动申请（预热）管理员授权 —— 设置页「申请授权」调用。
+    ///
+    /// 不同于 `resetAuthorization()` 的「清空」语义，这里走一次完整的
+    /// `AuthorizationCopyRights`，因此**会弹出系统授权框**（首次）并把凭据
+    /// 缓存起来，让随后约 5 分钟内的路由增删改都不再弹窗。
+    ///
+    /// - Returns: `true` 表示凭据已就绪；`false` 表示用户取消或授权失败。
+    @discardableResult
+    static func warmUpAuthorization() -> Bool {
+        var cancelled: Int32 = 0
+        let rc = RBWarmUpAuth(&cancelled)
+        return rc == 0
     }
 
     // MARK: - 方案 2：osascript 兜底（仅密码，无缓存）

@@ -3,22 +3,20 @@ import SwiftUI
 import Combine
 import Carbon.HIToolbox
 
-/// AppDelegate 接管菜单栏 UI 生命周期。
+/// AppDelegate 接管菜单栏 UI 与窗口生命周期。
 ///
-/// 为什么不用 SwiftUI 的 `MenuBarExtra`：
-///   1. SwiftUI 没有公开「可见性」绑定 —— 无法表达"在菜单栏里完全隐藏"。
-///      `NSStatusItem.isVisible` 直接支持。
+/// **菜单栏图标点开的是「快速启动页」，不是主窗口** —— 这是两个不同的界面：
+///   · 菜单栏图标 / ⌥⌘R → 快速启动页（搜索 + 一键开关，轻量）
+///   · 主窗口「路由管理」 / 应用菜单 → 完整管理 + 设置入口
+///
+/// **为什么不用 SwiftUI 的 `MenuBarExtra`**：
+///   1. SwiftUI 没有公开「可见性」绑定 —— 无法表达"在菜单栏里完全隐藏"，
+///      而 `NSStatusItem.isVisible` 直接支持（「在菜单栏显示快速启动图标」开关要用）；
 ///   2. `NSStatusItem` 切换可见性时无需重建视图。
 ///
-/// 因此 `RouteBarApp` 改为 `@NSApplicationDelegateAdaptor` 接入本类，
-/// 这里创建 `NSStatusItem` + `NSPopover`（用 `NSHostingController` 桥接
-/// SwiftUI 视图）替代 `MenuBarExtra`。
-///
-/// **菜单栏图标隐藏时的兜底入口**：LSUIElement=true 没有 Dock 图标，
-/// 菜单栏图标是用户唯一能打开菜单的入口。关掉后用 Carbon
-/// `RegisterEventHotKey` 注册全局快捷键 ⌥⌘R 唤起 popover。
-/// Carbon 热键**无需任何权限**（与 `NSEvent.addGlobalMonitorForEvents`
-/// 需要辅助功能权限不同）。
+/// **菜单栏图标隐藏时的兜底入口**：用 Carbon `RegisterEventHotKey` 注册
+/// 全局快捷键 ⌥⌘R 唤起快速启动页。Carbon 热键**无需任何权限**
+/// （与 `NSEvent.addGlobalMonitorForEvents` 需要辅助功能权限不同）。
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
@@ -35,6 +33,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKeyRef: EventHotKeyRef?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 窗口管理统一交给 WindowManager
+        WindowManager.shared.configure(store: store)
+
         // ── 状态栏按钮 ────────────────────────────────────────────
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
@@ -50,11 +51,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // ── Popover（SwiftUI 内容桥接） ──────────────────────────
         popover.behavior = .transient  // 点击外部自动关闭
-        let content = MenuBarContent().environmentObject(store)
+        let content = QuickLaunchView().environmentObject(store)
         popover.contentViewController = NSHostingController(rootView: content)
 
         // ── 同步 showInMenuBar → statusItem.isVisible ─────────────
-        // 初值：从 store 当前值手动同步一次（init 已从 UserDefaults 恢复）
         statusItem.isVisible = store.showInMenuBar
         store.$showInMenuBar
             .removeDuplicates()
@@ -66,24 +66,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if !visible, self.popover.isShown {
                     self.popover.performClose(nil)
                 }
+                // 图标开关会改变「窗口全关时要不要留 Dock 图标」的判定
+                WindowManager.shared.refreshActivationPolicy()
             }
             .store(in: &cancellables)
 
-        // ── 全局快捷键 ⌥⌘R：菜单栏图标隐藏时的兜底入口 ──────────
+        // ── 全局快捷键 ⌥⌘R：唤起快速启动页 ────────────────────────
         registerGlobalHotKey()
 
-        NotificationCenter.default.publisher(for: .rbHotKeyPressed)
+        NotificationCenter.default.publisher(for: .rbToggleQuickLaunch)
             .sink { [weak self] _ in
                 self?.togglePopover()
             }
             .store(in: &cancellables)
+
+        // ── 关闭 popover 请求（打开窗口 / 需要切界面时） ───────────
+        NotificationCenter.default.publisher(for: .rbClosePopover)
+            .sink { [weak self] _ in
+                guard let self = self, self.popover.isShown else { return }
+                self.popover.performClose(nil)
+            }
+            .store(in: &cancellables)
+
+        // ── 启动后打开主窗口 ──────────────────────────────────────
+        // 「打开软件」的预期是看到界面；关掉窗口后应用仍留在菜单栏。
+        WindowManager.shared.showMainWindow()
+
+        // ── 启动后静默检查更新 ────────────────────────────────────
+        // 延迟若干秒，避免与首帧渲染、路由同步抢主线程。
+        // 失败不打扰用户（只写日志），只有真的发现新版本才弹窗询问。
+        if store.autoCheckForUpdates {
+            DispatchQueue.main.asyncAfter(deadline: .now() + AppConfig.updateCheckLaunchDelay) {
+                Task { @MainActor in
+                    await UpdateChecker.shared.check(interactive: false)
+                }
+            }
+        }
     }
 
     @objc private func handleStatusItemClick(_ sender: Any?) {
         togglePopover()
     }
 
-    /// 切换 popover 显示/隐藏。也可由全局快捷键（菜单栏图标隐藏时）触发。
+    /// 切换快速启动页显示/隐藏。也可由全局快捷键（菜单栏图标隐藏时）触发。
     private func togglePopover() {
         if popover.isShown {
             popover.performClose(nil)
@@ -91,6 +116,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard let button = statusItem.button else { return }
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        // 让 popover 拿到键盘焦点（搜索框自动聚焦、⌘O/⌘Q 快捷键可用）
+        popover.contentViewController?.view.window?.makeKey()
+    }
+
+    // MARK: - 应用级事件
+
+    /// 关掉最后一个窗口不退出应用（保持菜单栏/后台常驻）
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    /// 点击 Dock 图标（或重新打开 App）时把主窗口找回来
+    func applicationShouldHandleReopen(_ sender: NSApplication,
+                                       hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            WindowManager.shared.showMainWindow()
+        }
+        return true
     }
 
     // MARK: - Carbon 全局快捷键
@@ -113,9 +156,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             GetApplicationEventTarget(), 0, &ref
         )
         guard regStatus == noErr, let ref = ref else {
-            // 注册失败时仍要让 App 可用 —— 退化为"重启 App" 兜底
-            print("[RouteBar] 全局快捷键 ⌥⌘R 注册失败（status=\(regStatus)）。" +
-                  "关闭图标后无法用快捷键唤起，需重启 App 恢复显示。")
+            // 注册失败时仍要让 App 可用 —— 退化为"从菜单栏图标唤起"
+            print("[RouteBar] 全局快捷键 ⌥⌘R 注册失败（status=\(regStatus)）。")
             return
         }
         self.hotKeyRef = ref
@@ -129,7 +171,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 用 NotificationCenter 把"任意线程"的消息桥接到"主线程"的订阅者。
         let handler: EventHandlerUPP = { (_, _, _) -> OSStatus in
             DispatchQueue.main.async {
-                NotificationCenter.default.post(name: .rbHotKeyPressed, object: nil)
+                NotificationCenter.default.post(name: .rbToggleQuickLaunch, object: nil)
             }
             return noErr
         }
@@ -148,5 +190,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 extension Notification.Name {
-    static let rbHotKeyPressed = Notification.Name("io.routebar.hotkey")
+    /// 唤起/收起快速启动页（全局快捷键和「打开快速启动」菜单项共用）
+    static let rbToggleQuickLaunch = Notification.Name("io.routebar.toggleQuickLaunch")
+
+    /// 请求关闭菜单栏 popover（打开窗口 / 切界面时用）
+    static let rbClosePopover = Notification.Name("io.routebar.closePopover")
 }

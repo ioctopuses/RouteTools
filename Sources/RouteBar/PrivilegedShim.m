@@ -86,3 +86,8 @@ void RBResetAuth(void) {
         gAuthRef = NULL;
     }
 }
+
+int RBWarmUpAuth(int *cancelled) {
+    if (cancelled) *cancelled = 0;
+    return RBEnsureRights(cancelled);
+}
