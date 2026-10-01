@@ -8,30 +8,33 @@ extension Bundle {
     }
 }
 
+/// 应用入口。
+///
+/// 菜单栏 UI 的实际管理在 `AppDelegate`（`NSStatusItem` + `NSPopover`），
+/// 这里只保留两个**独立的 Window**：
+///   - 添加路由
+///   - 编辑路由
+///
+/// 这两个 Window 是普通的 SwiftUI 窗口（不常驻菜单栏），菜单栏入口
+/// 由 AppDelegate 接管，因为 SwiftUI 的 `MenuBarExtra` 没有公开的
+/// 可见性绑定，无法支持「在菜单栏显示图标」开关。
 @main
 struct RouteBarApp: App {
-    @StateObject private var store = RouteStore()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
-        // 菜单栏图标 + 下拉面板（无 Dock 图标，常驻菜单栏）
-        MenuBarExtra("RouteBar", systemImage: "network") {
-            MenuBarContent()
-                .environmentObject(store)
-        }
-        .menuBarExtraStyle(.window)
-
         // 添加路由窗口
         Window("添加路由", id: "addRoute") {
             RouteEditView(route: nil)
-                .environmentObject(store)
+                .environmentObject(appDelegate.store)
         }
 
         // 编辑路由窗口（复用同一个窗口，目标路由由 store.editingRouteID 决定）
         Window("编辑路由", id: "editRoute") {
-            if let id = store.editingRouteID,
-               let route = store.routes.first(where: { $0.id == id }) {
+            if let id = appDelegate.store.editingRouteID,
+               let route = appDelegate.store.routes.first(where: { $0.id == id }) {
                 RouteEditView(route: route)
-                    .environmentObject(store)
+                    .environmentObject(appDelegate.store)
             } else {
                 EmptyView()
             }
@@ -39,7 +42,7 @@ struct RouteBarApp: App {
     }
 }
 
-// MARK: - 菜单栏下拉内容
+// MARK: - 菜单栏下拉内容（由 AppDelegate 的 NSHostingController 桥接到 NSPopover）
 
 struct MenuBarContent: View {
     @EnvironmentObject var store: RouteStore
@@ -55,7 +58,7 @@ struct MenuBarContent: View {
             Divider()
 
             if store.routes.isEmpty {
-                Text("还没有任何路由，点击底部“添加路由”开始。")
+                Text("还没有任何路由，点击底部「添加路由」开始。")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -77,6 +80,14 @@ struct MenuBarContent: View {
                         store.applyAllEnabled()
                     }
                 }
+
+            Toggle("在菜单栏显示图标",
+                   isOn: $store.showInMenuBar)
+                .font(.caption)
+
+            Text("关闭后按 ⌥⌘R 唤起菜单（图标隐藏时仍可恢复显示）")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
 
             Text("v\(Bundle.main.appVersion)")
                 .font(.system(size: 10))

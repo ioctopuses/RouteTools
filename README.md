@@ -9,6 +9,7 @@
 - 每条路由一个开关，**一键启用 / 禁用**（对应系统路由表的加入 / 删除）
 - 支持网段（CIDR，如 `172.16.0.0/16`）与主机路由（如 `10.0.0.1`）
 - 可选「启动时自动应用已启用路由」，重启后自动恢复
+- **可隐藏菜单栏图标**（开关在菜单里），关掉后用全局快捷键 ⌥⌘R 唤起
 - 配置持久化保存，无需重复输入
 
 ## 安装
@@ -199,6 +200,29 @@ sudo visudo
 - **修订号（第三位）**：小更新，如修复、小功能增强。
 - **次版本（第二位）**：较大更新，如新增功能模块。
 - **主版本（第一位）**：颠覆性变更，如架构重写或核心逻辑改变。
+
+---
+
+### v1.7.0 — 2026-10-01
+
+**新增「在菜单栏显示图标」开关 + 菜单栏图标大小调整 + 全局快捷键 ⌥⌘R 兜底入口**
+
+**1. 菜单栏图标可隐藏**
+
+- 菜单里新增「在菜单栏显示图标」开关，控制 `NSStatusItem.isVisible`
+- 关闭后状态栏完全空，给想腾出菜单栏位置（比如用 ApexBar 收其他图标）的用户留个口
+- LSUIElement=true 没 Dock 图标，**关掉后必须留兜底入口** —— 用 Carbon `RegisterEventHotKey` 注册全局快捷键 ⌥⌘R，无需任何权限（比 `NSEvent.addGlobalMonitorForEvents` 干净；后者要辅助功能权限）
+
+**2. 菜单栏图标调整大小**
+
+- 旧版本 `NSImage(systemSymbolName: "network")` 默认按 ~13pt 渲染，比其它 ~22pt 的菜单栏 App「瘦一圈」
+- 改为 `SymbolConfiguration(pointSize: 18)`，与一般应用图标大小接近
+
+**3. 架构调整**
+
+- SwiftUI 的 `MenuBarExtra` 没有公开的 `isVisible` 绑定，无法支持可见性开关
+- 改为 `NSStatusItem` + `NSPopover`（`NSHostingController` 桥接 SwiftUI 视图），由 `AppDelegate` 接管菜单栏 UI 生命周期
+- `RouteBarApp` 通过 `@NSApplicationDelegateAdaptor` 接入，`store` 由 `AppDelegate` 持有并通过 `environmentObject` 注入
 
 ---
 

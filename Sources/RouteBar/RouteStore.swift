@@ -19,6 +19,20 @@ final class RouteStore: ObservableObject {
         }
     }
 
+    /// 菜单栏图标是否可见（菜单里「在菜单栏显示图标」Toggle 绑定此值）。
+    ///
+    /// **关闭后的兜底入口**：LSUIElement=true 没有 Dock 图标，菜单栏图标是
+    /// 唯一入口。关闭后用全局快捷键 ⌥⌘R 唤起 popover 菜单（AppDelegate
+    /// 注册 Carbon RegisterEventHotKey，无需辅助功能权限）。
+    ///
+    /// 注意：@Published 赋值在 init 阶段不会触发 Combine sink，所以
+    /// AppDelegate 在 init 之后通过 store.showInMenuBar 读初值、再订阅变化。
+    @Published var showInMenuBar: Bool = true {
+        didSet {
+            UserDefaults.standard.set(showInMenuBar, forKey: "showInMenuBar")
+        }
+    }
+
     private let fileURL: URL
 
     init() {
@@ -30,6 +44,7 @@ final class RouteStore: ObservableObject {
         load()
         // 从 UserDefaults 恢复开关状态（init 中赋值不触发 didSet，安全）
         autoApplyOnLaunch = UserDefaults.standard.bool(forKey: "autoApplyOnLaunch")
+        showInMenuBar = UserDefaults.standard.object(forKey: "showInMenuBar") as? Bool ?? true
 
         if autoApplyOnLaunch {
             // 开启自动恢复：先按用户意图补齐缺失路由，再同步界面状态。
