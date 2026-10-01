@@ -10,24 +10,33 @@ extension Bundle {
 
 /// 应用入口。
 ///
-/// 菜单栏 UI 的实际管理在 `AppDelegate`（`NSStatusItem` + `NSPopover`），
-/// 这里只保留两个**独立的 Window**：
-///   - 添加路由
-///   - 编辑路由
+/// 三个 Window Scene：
+///   - `routeList` 主窗口（路由列表 + 工具栏，App 启动时自动打开）
+///   - `addRoute`  添加路由窗口（由主窗口或菜单栏「添加路由…」唤起）
+///   - `editRoute` 编辑路由窗口（复用同一个窗口，目标路由由 `store.editingRouteID` 决定）
 ///
-/// 这两个 Window 是普通的 SwiftUI 窗口（不常驻菜单栏），菜单栏入口
-/// 由 AppDelegate 接管，因为 SwiftUI 的 `MenuBarExtra` 没有公开的
-/// 可见性绑定，无法支持「在菜单栏显示图标」开关。
+/// 菜单栏 UI 由 `AppDelegate`（`NSStatusItem` + `NSPopover`）管理，
+/// 这里不暴露 `MenuBarExtra`，因为 SwiftUI 的 `MenuBarExtra`
+/// 没有公开的可见性绑定，无法支持「在菜单栏显示图标」开关。
 @main
 struct RouteBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
+        // 主窗口：路由列表（App 启动时自动打开，用户关掉后可从菜单栏再次唤起）
+        Window("路由管理", id: "routeList") {
+            RouteListView()
+                .environmentObject(appDelegate.store)
+        }
+        .defaultSize(width: 560, height: 380)
+        .windowResizability(.contentMinSize)
+
         // 添加路由窗口
         Window("添加路由", id: "addRoute") {
             RouteEditView(route: nil)
                 .environmentObject(appDelegate.store)
         }
+        .defaultSize(width: 420, height: 240)
 
         // 编辑路由窗口（复用同一个窗口，目标路由由 store.editingRouteID 决定）
         Window("编辑路由", id: "editRoute") {
@@ -39,11 +48,92 @@ struct RouteBarApp: App {
                 EmptyView()
             }
         }
+        .defaultSize(width: 420, height: 240)
     }
 }
 
-// MARK: - 菜单栏下拉内容（由 AppDelegate 的 NSHostingController 桥接到 NSPopover）
+// MARK: - 主窗口：路由列表
 
+struct RouteListView: View {
+    @EnvironmentObject var store: RouteStore
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // 顶部工具栏
+            HStack {
+                Text("RouteBar · 路由管理")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    openWindow(id: "addRoute")
+                } label: {
+                    Label("添加路由", systemImage: "plus")
+                }
+                .keyboardShortcut("n", modifiers: [.command])
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.bar)
+
+            Divider()
+
+            // 路由列表
+            if store.routes.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "network")
+                        .font(.system(size: 32))
+                        .foregroundColor(.secondary)
+                    Text("还没有任何路由")
+                        .font(.headline)
+                    Text("点击右上角「添加路由」开始")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List {
+                    ForEach(store.routes) { route in
+                        RouteRow(route: route)
+                    }
+                }
+                .listStyle(.inset(alternatesRowBackgrounds: true))
+            }
+
+            Divider()
+
+            // 底部状态栏
+            HStack {
+                Text(statusText)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text("v\(Bundle.main.appVersion)")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(.bar)
+        }
+        .frame(minWidth: 520, minHeight: 320)
+    }
+
+    private var statusText: String {
+        if store.routes.isEmpty {
+            return "0 条路由"
+        }
+        let total = store.routes.count
+        let enabled = store.routes.filter { $0.enabled }.count
+        return "\(total) 条路由 · 已启用 \(enabled)"
+    }
+}
+
+// MARK: - 菜单栏下拉内容（精简版：仅设置；路由列表全部在主窗口）
+
+/// 由 AppDelegate 的 NSHostingController 桥接到 NSPopover。
+/// v1.8.0 改为「设置面板」：路由列表与所有 CRUD 都在主窗口里，
+/// 菜单栏只放开关 + 入口。这样菜单栏高度可控、不再随路由条数增长撑屏。
 struct MenuBarContent: View {
     @EnvironmentObject var store: RouteStore
     @Environment(\.openWindow) private var openWindow
@@ -51,31 +141,16 @@ struct MenuBarContent: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("RouteBar · 路由管理")
+                Text("RouteBar")
                     .font(.headline)
                 Spacer()
             }
-            Divider()
-
-            if store.routes.isEmpty {
-                Text("还没有任何路由，点击底部「添加路由」开始。")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 6)
-            } else {
-                ForEach(store.routes) { route in
-                    RouteRow(route: route)
-                }
-            }
-
             Divider()
 
             Toggle("启动时自动应用已启用路由",
                    isOn: $store.autoApplyOnLaunch)
                 .font(.caption)
                 .onChange(of: store.autoApplyOnLaunch) { newValue in
-                    // 用户手动打开开关时立即应用一次（点下去立刻见效）
                     if newValue {
                         store.applyAllEnabled()
                     }
@@ -85,7 +160,7 @@ struct MenuBarContent: View {
                    isOn: $store.showInMenuBar)
                 .font(.caption)
 
-            Text("关闭后按 ⌥⌘R 唤起菜单（图标隐藏时仍可恢复显示）")
+            Text("关闭后按 ⌥⌘R 唤起菜单")
                 .font(.system(size: 10))
                 .foregroundColor(.secondary)
 
@@ -98,14 +173,17 @@ struct MenuBarContent: View {
                 Button("清除授权缓存") { PrivilegedRunner.resetAuthorization() }
                     .font(.caption)
                 Spacer()
-                Button("添加路由…") { openWindow(id: "addRoute") }
+                Button("打开主窗口…") { openWindow(id: "routeList") }
+                    .keyboardShortcut("o", modifiers: [.command])
                 Button("退出") { NSApplication.shared.terminate(nil) }
             }
         }
         .padding(12)
-        .frame(width: 320)
+        .frame(width: 300)
     }
 }
+
+// MARK: - 路由行（主窗口列表里使用）
 
 struct RouteRow: View {
     @EnvironmentObject var store: RouteStore
@@ -113,7 +191,7 @@ struct RouteRow: View {
     let route: Route
 
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
+        HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(route.name.isEmpty ? route.destination : route.name)
                     .font(.system(size: 13, weight: .medium))
