@@ -95,6 +95,18 @@ if [ -f "AppIcon.icns" ]; then
   cp "AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 fi
 
+# 菜单栏模板图标（@1x / @2x 两个分辨率）。
+# `NSImage(named: "MenuBarIcon")` 会按屏幕缩放自动挑对应那张，只放 @1x
+# 在 Retina 上会糊。同样必须在签名之前放入。
+for icon in "MenuBarIcon.png" "MenuBarIcon@2x.png"; do
+  if [ -f "Resources/${icon}" ]; then
+    cp "Resources/${icon}" "$APP_BUNDLE/Contents/Resources/${icon}"
+    echo "    已放入 ${icon}"
+  else
+    echo "    ⚠️  未找到 Resources/${icon}，菜单栏图标会回退到系统符号"
+  fi
+done
+
 # 自动更新的替换助手脚本 —— 同样必须在签名之前放好。
 # 签名会对 Contents/Resources 一并做资源封套校验，事后补进去的文件会让签名失效，
 # 而更新恰恰要校验签名/结构，等于自断更新链路。

@@ -39,12 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // ── 状态栏按钮 ────────────────────────────────────────────
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            // pointSize: 18 让 SF Symbol 与其它 ~22pt 菜单栏 App 大小接近
-            // （`NSImage(systemSymbolName:)` 默认按 ~13pt 渲染，瘦一圈）
-            let symbolConfig = NSImage.SymbolConfiguration(pointSize: 18, weight: .regular)
-            button.image = NSImage(systemSymbolName: "network",
-                                    accessibilityDescription: "RouteBar")?
-                .withSymbolConfiguration(symbolConfig)
+            button.image = Self.menuBarIcon()
             button.target = self
             button.action = #selector(handleStatusItemClick(_:))
         }
@@ -108,6 +103,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         togglePopover()
     }
 
+    /// 菜单栏图标：用**自家设计**的模板图（`Resources/MenuBarIcon.png`，
+    /// 由 `make_menubar_icon.py` 生成；@1x/@2x 两个分辨率一起进包）。
+    ///
+    /// **为什么必须 `isTemplate = true`**：模板图只取 alpha 通道，由系统决定
+    /// 颜色 —— 深色菜单栏渲染白色、浅色菜单栏渲染黑色，并自动跟随高亮与失焦。
+    /// 若把 PNG 本身画成纯白，浅色菜单栏上会彻底看不见。
+    /// （用户要的「白色」在深色菜单栏下就是这个效果，而且是自适应的。）
+    ///
+    /// 早期版本这里写的是 SF Symbol `network` —— 那是个"地球/经纬线"造型，
+    /// 与 App 的「节点 → 网关」路由母题毫无关系，正是"菜单栏是个地球"的原因。
+    private static func menuBarIcon() -> NSImage? {
+        if let icon = NSImage(named: "MenuBarIcon") {
+            icon.isTemplate = true
+            // 按 pt 指定显示尺寸；系统会按需挑 @1x(18) / @2x(36) 那张
+            icon.size = NSSize(width: 18, height: 18)
+            return icon
+        }
+        // 兜底：万一资源没打进包（例如手工编译漏拷 Resources/），
+        // 退回系统符号，至少保证菜单栏还能点开快速启动页。
+        print("[RouteBar] 未找到 MenuBarIcon 资源，回退到系统符号。")
+        let config = NSImage.SymbolConfiguration(pointSize: 18, weight: .regular)
+        return NSImage(systemSymbolName: "arrow.triangle.branch",
+                       accessibilityDescription: "RouteBar")?
+            .withSymbolConfiguration(config)
+    }
+
     /// 切换快速启动页显示/隐藏。也可由全局快捷键（菜单栏图标隐藏时）触发。
     private func togglePopover() {
         if popover.isShown {
@@ -116,8 +137,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard let button = statusItem.button else { return }
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        // 让 popover 拿到键盘焦点（搜索框自动聚焦、⌘O/⌘Q 快捷键可用）
+        // 让 popover 拿到键盘焦点（⌘O/⌘Q 快捷键可用）
         popover.contentViewController?.view.window?.makeKey()
+        // 再把焦点交给**搜索框**。顺序不能颠倒：`makeKey()` 会把窗口的
+        // firstResponder 重置回默认值，抢在它之前设的焦点会被这一下清掉
+        // （"唤起快速启动页时光标不在搜索框"就是这么来的）。
+        // 再等一个 runloop 才发，是因为 makeKey 之后 SwiftUI 还要完成这一轮布局，
+        // 视图挂进 window 之后再设 `FocusState` 才生效。
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .rbFocusQuickSearch, object: nil)
+        }
     }
 
     // MARK: - 应用级事件
@@ -195,4 +224,10 @@ extension Notification.Name {
 
     /// 请求关闭菜单栏 popover（打开窗口 / 切界面时用）
     static let rbClosePopover = Notification.Name("io.routebar.closePopover")
+
+    /// 请求快速启动页把**键盘焦点交给搜索框**。
+    ///
+    /// 由 `AppDelegate.togglePopover()` 在 `makeKey()` **之后**发出（时序理由见
+    /// `RBSearchField.focusNonce`）；订阅方是 `QuickLaunchView`。
+    static let rbFocusQuickSearch = Notification.Name("io.routebar.focusQuickSearch")
 }

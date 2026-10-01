@@ -21,3 +21,13 @@ enum AppConfig {
     /// 与首帧渲染抢主线程。失败静默，只有真的发现新版本才打扰用户。
     static let updateCheckLaunchDelay: TimeInterval = 8.0
 }
+
+/// 读取应用版本号（`CFBundleShortVersionString`）。
+///
+/// 放在这里而不是 `RouteBarApp.swift`：视图文件（主窗口 / 设置页 / 快速启动）
+/// 都要读版本号，而离屏渲染这些视图时**不需要**也不应该带上 `@main` 入口。
+extension Bundle {
+    var appVersion: String {
+        (infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0.0"
+    }
+}

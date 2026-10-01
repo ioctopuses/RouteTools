@@ -17,13 +17,22 @@ struct Route: Identifiable, Codable, Equatable {
     /// 升级后读旧文件会直接抛 keyNotFound，用户的路由配置会全部丢失。
     var group: String?
 
+    /// 自定义图标的**文件名**（不是路径，也不是图片本身）。
+    ///
+    /// 文件落在 `~/Library/Application Support/RouteBar/Icons/`，读写与清理都走
+    /// `RouteIconLibrary`；为空 = 用自绘的默认路由图标（`RBDefaultRouteIcon`）。
+    /// 与 `group` 同理声明成可选类型，旧版本写下的 routes.json 里没有这个键也能
+    /// 正常解码 —— 用非可选 String 会让升级后读旧文件直接抛 keyNotFound。
+    var icon: String?
+
     init(id: UUID = UUID(),
          name: String = "",
          destination: String,
          gateway: String,
          enabled: Bool = true,
          note: String = "",
-         group: String? = nil) {
+         group: String? = nil,
+         icon: String? = nil) {
         self.id = id
         self.name = name
         self.destination = destination
@@ -31,6 +40,7 @@ struct Route: Identifiable, Codable, Equatable {
         self.enabled = enabled
         self.note = note
         self.group = group
+        self.icon = icon
     }
 }
 
