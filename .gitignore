@@ -10,6 +10,9 @@
 # 应用包（建议用 build.sh 自行构建）
 RouteBar.app
 
+# 发布打包产物（进 GitHub Release，不进代码库）
+RouteBar-*.zip
+
 # Python 缓存
 __pycache__/
 *.pyc
